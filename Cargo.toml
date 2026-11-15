@@ -8,7 +8,7 @@ members = ["crates/tresse-client", "crates/tresse-gui"]
 exclude = ["adaptive-colors"]
 
 [workspace.package]
-version = "1.0.3"
+version = "1.0.4"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-3.0"
