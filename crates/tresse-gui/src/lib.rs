@@ -15,6 +15,9 @@
 //! [`android_main`]. Everywhere else `main.rs` calls [`run`].
 
 mod appearance;
+mod paths;
+mod repos;
+mod settings;
 mod shell;
 mod ui;
 
@@ -44,6 +47,7 @@ fn start(cx: &mut gpui_kit::App) {
     #[cfg(not(target_os = "android"))]
     gpui_android_glue::init(cx);
     gpui_adaptive::init(input_mode(), cx);
+    settings::Settings::install(cx);
     appearance::init(cx);
     appearance::apply(None, cx);
     shell::init(cx);

@@ -7543,13 +7543,19 @@ dependencies = [
 name = "tresse-gui"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "dirs 6.0.0",
  "gpui-adaptive",
  "gpui-adaptive-colors",
  "gpui-android-glue",
  "gpui-kit",
  "gpui-pre-mobile",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
+ "tresse-client",
 ]
 
 [[package]]

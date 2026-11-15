@@ -1,15 +1,15 @@
-use gpui_adaptive::{AppFrame, Empty};
+use gpui_adaptive::{AppFrame, Screen};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Subscription, Window};
+use gpui_kit::{Context, Entity, Subscription, Window};
 
-use crate::ui::Lucide;
+use crate::repos::{self, Repositories};
 
 /// What the window is showing.
 pub enum Stage {
     /// Nothing has been decided yet: the window has only just opened.
     Starting,
-    /// No folder is set up here, so ask which to add.
-    Welcome,
+    /// The folders this installation manages.
+    Repositories(Entity<Repositories>),
 }
 
 pub struct Shell {
@@ -33,22 +33,30 @@ impl Shell {
 
     /// Decides what this window is for. Runs once, right after it opens.
     pub(super) fn start(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        // Stage S2 replaces this with the registry of folders: until there is
-        // one, every launch has nothing set up.
-        self.stage = Stage::Welcome;
+        let repositories = cx.new(|cx| Repositories::new(cx));
+        self.stage = Stage::Repositories(repositories);
         cx.notify();
     }
 }
 
 impl Render for Shell {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let frame = AppFrame::new("Tresse GUI");
         match &self.stage {
             Stage::Starting => frame,
-            Stage::Welcome => frame.child(
-                Empty::new(Lucide::FolderOpen, "No folders yet")
-                    .body("Add a folder to keep its history and sync it with Tresse."),
-            ),
+            Stage::Repositories(repositories) => {
+                let count = repositories.read(cx).len();
+                let subtitle = if count == 1 {
+                    "1 folder".to_string()
+                } else {
+                    format!("{count} folders")
+                };
+                let page = Screen::new("folders", "Folders")
+                    .subtitle(subtitle)
+                    .command(repos::add_command(repositories.downgrade()))
+                    .content(repositories.clone());
+                frame.child(page)
+            }
         }
     }
 }
