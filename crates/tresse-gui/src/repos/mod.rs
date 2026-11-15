@@ -7,20 +7,28 @@
 //! that describes it.
 
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use gpui_adaptive::{
-    ActiveColors as _, Collection, Command, Confirm, Empty, ItemActions, ListRow, Notice, Tile,
-    Tone,
+    ActiveColors as _, Collection, Command, Confirm, Empty, ItemActions, ListRow, Notice, Signal,
+    Tile, Tone,
 };
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Context, SharedString, WeakEntity, Window, div};
+use gpui_kit::{App, Context, Entity, EventEmitter, SharedString, WeakEntity, Window, div};
 
 use crate::settings::{RepoRecord, Settings};
+use crate::sync_engine::{self, SyncEngine};
 use crate::ui::Lucide;
 use tresse_client::{RemoteConfig, StorageType};
 
+/// What the list asks the window to do.
+pub enum Event {
+    /// Open one folder's page.
+    Open(PathBuf),
+}
+
 /// One folder as the list shows it.
-pub struct Row {
+struct Row {
     path: PathBuf,
     name: String,
     remote: Option<RemoteConfig>,
@@ -50,24 +58,35 @@ impl Row {
             row.problem = Some("Not a Tresse repository here.".to_string());
             return row;
         }
-        match tresse_client::Repo::open_fs(&path).and_then(|repo| {
-            tresse_client::config::read_remote(repo.vault().as_ref()).map_err(std::io::Error::other)
-        }) {
+        match read_remote(&path) {
             Ok(remote) => row.remote = remote,
-            Err(error) => row.problem = Some(error.to_string()),
+            Err(error) => row.problem = Some(error),
         }
         row
     }
 }
 
+fn read_remote(path: &std::path::Path) -> Result<Option<RemoteConfig>, String> {
+    let repo = tresse_client::Repo::open_fs(path).map_err(|error| error.to_string())?;
+    tresse_client::config::read_remote(repo.vault().as_ref())
+}
+
 /// The list itself, and what can be done from it.
 pub struct Repositories {
     rows: Vec<Row>,
+    engine: Entity<SyncEngine>,
 }
+
+impl EventEmitter<Event> for Repositories {}
 
 impl Repositories {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let mut repositories = Self { rows: Vec::new() };
+        let engine = SyncEngine::global(cx);
+        cx.observe(&engine, |_, _, cx| cx.notify()).detach();
+        let mut repositories = Self {
+            rows: Vec::new(),
+            engine,
+        };
         repositories.reload(cx);
         repositories
     }
@@ -76,7 +95,8 @@ impl Repositories {
         self.rows.len()
     }
 
-    fn reload(&mut self, cx: &App) {
+    /// Reads every folder again: its remote, and what the latest sync said.
+    pub(crate) fn reload(&mut self, cx: &App) {
         self.rows = Settings::global(cx)
             .repositories()
             .iter()
@@ -215,40 +235,93 @@ impl Repositories {
     }
 
     fn row(&self, row: &Row, cx: &mut Context<Self>) -> ListRow {
-        let id = SharedString::from(format!("folder-{}", row.path.display()));
+        let key = row.path.display().to_string();
+        let status = self.engine.read(cx).status(&key);
+        let id = SharedString::from(format!("folder-{key}"));
         let mut list_row = ListRow::new(id, row.name.clone())
             .leading(Tile::new(Lucide::Folder, cx.colors().accent))
-            .subtitle(row.path.display().to_string());
-        match (&row.problem, &row.remote) {
-            (Some(problem), _) => {
-                list_row = list_row
-                    .supporting(problem.clone())
-                    .supporting_tone(Tone::Danger);
-            }
-            (None, Some(remote)) => {
-                let mut label = storage_label(remote.storage_type).to_string();
-                if let Some(at) = row.last_sync_at {
-                    label.push_str(&format!(" · {}", clock_label(at)));
+            .subtitle(key.clone());
+        if status.phase.is_running() {
+            list_row = list_row
+                .trailing(
+                    div()
+                        .text_color(cx.colors().muted)
+                        .child(status.phase.label()),
+                )
+                .signal(Some(Signal::Busy));
+        } else if let Some(error) = &status.error {
+            list_row = list_row
+                .supporting(error.clone())
+                .supporting_tone(Tone::Danger);
+        } else {
+            match (&row.problem, &row.remote) {
+                (Some(problem), _) => {
+                    list_row = list_row
+                        .supporting(problem.clone())
+                        .supporting_tone(Tone::Danger);
                 }
-                list_row = list_row.trailing(div().text_color(cx.colors().muted).child(label));
-            }
-            (None, None) => {
-                list_row =
-                    list_row.trailing(div().text_color(cx.colors().muted).child("Not connected"));
+                (None, Some(remote)) => {
+                    let mut label = storage_label(remote.storage_type).to_string();
+                    if let Some(at) = status.finished_at.or(row.last_sync_at) {
+                        label.push_str(&format!(" · {}", sync_engine::clock(at)));
+                    }
+                    list_row = list_row.trailing(div().text_color(cx.colors().muted).child(label));
+                }
+                (None, None) => {
+                    list_row = list_row
+                        .trailing(div().text_color(cx.colors().muted).child("Not connected"));
+                }
             }
         }
-        list_row.actions(self.row_actions(row, cx))
+        let open = {
+            let this = cx.weak_entity();
+            let path = row.path.clone();
+            move |_: &mut Window, cx: &mut App| {
+                this.update(cx, |_, cx| cx.emit(Event::Open(path.clone())))
+                    .ok();
+            }
+        };
+        let actions = self.row_actions(row, cx);
+        list_row.on_activate(open).actions(actions)
     }
 
     fn row_actions(&self, row: &Row, cx: &mut Context<Self>) -> ItemActions {
         let this: WeakEntity<Self> = cx.weak_entity();
         let path = row.path.display().to_string();
         let name = row.name.clone();
-        let action_id = SharedString::from(format!("remove-folder-{path}"));
+        let folder = row.path.clone();
+        let remove_id = SharedString::from(format!("remove-folder-{path}"));
+        let configure_id = SharedString::from(format!("configure-folder-{path}"));
+        let sync_id = SharedString::from(format!("sync-folder-{path}"));
+        let engine = self.engine.clone();
+        let sync_engine = engine.clone();
+        let sync_target = row.path.clone();
+        let changed_this = this.clone();
+        let changed: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, cx| {
+            changed_this
+                .update(cx, |this, cx| {
+                    this.reload(cx);
+                    cx.notify();
+                })
+                .ok();
+        });
+        let sync_this = this.clone();
         ItemActions::new()
             .title(name.clone())
             .command(
-                Command::new(action_id, "Remove from list")
+                Command::new(sync_id, "Sync now").on_trigger(move |_, cx| {
+                    sync_this
+                        .update(cx, |_, cx| sync_engine::sync(&sync_engine, sync_target.clone(), cx))
+                        .ok();
+                }),
+            )
+            .command(
+                Command::new(configure_id, "Configure connection…").on_trigger(move |window, cx| {
+                    crate::connect::open(folder.clone(), changed.clone(), window, cx);
+                }),
+            )
+            .command(
+                Command::new(remove_id, "Remove from list")
                     .destructive()
                     .on_trigger(move |window, cx| {
                         this.update(cx, |this, cx| this.remove(&path, cx)).ok();
@@ -294,18 +367,7 @@ fn storage_label(storage: StorageType) -> &'static str {
     }
 }
 
-/// When the last good sync was, as the clock the person reads.
-fn clock_label(at: u64) -> String {
-    chrono::DateTime::from_timestamp_millis(at as i64)
-        .map(|time| {
-            time.with_timezone(&chrono::Local)
-                .format("%H:%M")
-                .to_string()
-        })
-        .unwrap_or_default()
-}
-
-fn folder_name(path: &std::path::Path) -> String {
+pub(crate) fn folder_name(path: &std::path::Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().to_string())
         .filter(|name| !name.is_empty())
@@ -315,6 +377,7 @@ fn folder_name(path: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync_engine::Phase;
 
     fn record(path: &std::path::Path) -> RepoRecord {
         RepoRecord {
@@ -369,5 +432,19 @@ mod tests {
             row.remote.as_ref().map(|remote| remote.storage_type),
             Some(StorageType::Http)
         );
+    }
+
+    #[test]
+    fn idle_folders_report_no_phase_and_a_finished_one_summarises() {
+        let idle = sync_engine::Status::default();
+        assert_eq!(idle.phase, Phase::Idle);
+        assert!(idle.summary().is_none());
+        let done = sync_engine::Status {
+            phase: Phase::Done,
+            pulled: 2,
+            pushed: 1,
+            ..Default::default()
+        };
+        assert_eq!(done.summary().as_deref(), Some("2 received, 1 sent"));
     }
 }

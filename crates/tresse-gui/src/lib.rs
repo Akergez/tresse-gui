@@ -15,10 +15,13 @@
 //! [`android_main`]. Everywhere else `main.rs` calls [`run`].
 
 mod appearance;
+mod connect;
 mod paths;
+mod repo;
 mod repos;
 mod settings;
 mod shell;
+mod sync_engine;
 mod ui;
 
 /// Names the application to the system. The directories the settings live in
@@ -48,6 +51,7 @@ fn start(cx: &mut gpui_kit::App) {
     gpui_android_glue::init(cx);
     gpui_adaptive::init(input_mode(), cx);
     settings::Settings::install(cx);
+    sync_engine::SyncEngine::install(cx);
     appearance::init(cx);
     appearance::apply(None, cx);
     shell::init(cx);
