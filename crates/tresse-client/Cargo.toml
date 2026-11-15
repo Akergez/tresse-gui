@@ -1,0 +1,9 @@
+[package]
+name = "tresse-client"
+description = "Tresse for the filesystem: a folder's history and its sync, over a vault seam"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true

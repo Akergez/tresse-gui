@@ -1,0 +1,38 @@
+[package]
+name = "tresse-gui"
+description = "Folders versioned and synchronized with Tresse"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+# A shared object as well, which is what an Android activity loads.
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+gpui-kit = "0.7.0"
+# The design system the window is drawn with: its intents, primitives,
+# colours and scale (github.com/Akergez/gpui-mobile-components). gpui-kit's
+# components are what it is made of, not what this crate calls; see
+# `tests/design_system.rs`.
+gpui-adaptive = { git = "https://github.com/Akergez/gpui-mobile-components", tag = "v0.5.3" }
+# The theme's colours: a Material You scheme made from the system's colour.
+gpui-adaptive-colors = { git = "https://github.com/Akergez/gpui-adaptive-colors", branch = "main" }
+# The Android side shared with Money Manager and the other applications:
+# android_main, the status bar, the insets, back. Every function of it also
+# exists off Android. Its Java half is `com.akergez.gpui:android-glue` in
+# android/app/build.gradle.kts, at the same version.
+gpui-android-glue = { git = "https://github.com/Akergez/gpui-android-glue", tag = "v0.4.9" }
+tracing.workspace = true
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# With no subscriber, events go to `log`, and from there to logcat.
+tracing = { workspace = true, features = ["log"] }
+# The deep links the Tresse server's connect page returns through. The same
+# revision gpui-android-glue builds against, so one copy of the platform ends
+# up in the library.
+gpui-mobile = { package = "gpui-pre-mobile", git = "https://github.com/Akergez/gpui-mobile", rev = "d69470c6f6de0cc005797f8db0553082066eb857" }

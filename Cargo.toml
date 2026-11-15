@@ -1,0 +1,48 @@
+# The application is drawn with GPUI Kit and its adaptive design system, the
+# same stack as Money Manager, and syncs through the Tresse crates.
+[workspace]
+resolver = "2"
+members = ["crates/tresse-client", "crates/tresse-gui"]
+# A checkout of the colour library (github.com/Akergez/gpui-adaptive-colors)
+# may sit here for working on both at once; it is a workspace of its own.
+exclude = ["adaptive-colors"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-3.0"
+authors = ["Akergez"]
+repository = "https://gitlab.com/ragusseven/tresse-gui"
+
+[workspace.dependencies]
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tracing = "0.1"
+
+[profile.dev]
+# The toolkit is most of the build; without its debug information a debug
+# build links in seconds and takes a fraction of the disk.
+debug = "line-tables-only"
+
+# The toolkit lays out and paints every frame; unoptimised it does so at a
+# fraction of the display's rate, and every animation shows it. Dependencies
+# are built once, so optimising them costs one long build and nothing after.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+# What `cargo build --release` gives you while working on the application: an
+# optimised binary that does not take minutes to rebuild after an edit.
+incremental = true
+
+[profile.dist]
+# What gets shipped: thin LTO and one codegen unit. Slow, and it only has to
+# happen once per release: `cargo build --profile dist`, binary in `target/dist`.
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+incremental = false
+strip = true
