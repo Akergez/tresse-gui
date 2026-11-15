@@ -1,11 +1,15 @@
 use std::path::PathBuf;
 
-use gpui_adaptive::{AppFrame, Screen};
+use gpui_adaptive::prim::column;
+use gpui_adaptive::{AppFrame, Command, Screen};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, Subscription, Window};
+use gpui_kit::{Context, Entity, FocusHandle, Subscription, Window};
 
 use crate::repo::{self, RepoView};
 use crate::repos::{self, Repositories};
+use crate::shell::CONTEXT;
+use crate::shell::OpenSettings;
+use crate::ui::Lucide;
 
 /// What the window is showing.
 pub enum Stage {
@@ -20,6 +24,9 @@ pub enum Stage {
 pub struct Shell {
     stage: Stage,
     repositories: Entity<Repositories>,
+    /// The window's own focus, so the shortcuts work wherever the keyboard
+    /// was last.
+    focus: FocusHandle,
     /// The system switching between light and dark, which a "System" theme
     /// has to follow while the window is open.
     _appearance: Subscription,
@@ -40,6 +47,7 @@ impl Shell {
         Shell {
             stage: Stage::Starting,
             repositories,
+            focus: cx.focus_handle(),
             _appearance: appearance,
             _repositories: subscription,
             _view: None,
@@ -47,7 +55,8 @@ impl Shell {
     }
 
     /// Decides what this window is for. Runs once, right after it opens.
-    pub(super) fn start(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus.focus(window, cx);
         self.stage = Stage::Repositories;
         cx.notify();
     }
@@ -86,8 +95,8 @@ impl Shell {
 impl Render for Shell {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let frame = AppFrame::new("Tresse GUI");
-        match &self.stage {
-            Stage::Starting => frame,
+        let content = match &self.stage {
+            Stage::Starting => frame.into_any_element(),
             Stage::Repositories => {
                 let count = self.repositories.read(cx).len();
                 let subtitle = if count == 1 {
@@ -95,13 +104,26 @@ impl Render for Shell {
                 } else {
                     format!("{count} folders")
                 };
+                let settings = Command::new("settings", "Settings…")
+                    .icon(Lucide::Settings)
+                    .overflow()
+                    .on_trigger(|window, cx| crate::settings_dialog::open(window, cx));
                 let page = Screen::new("folders", "Folders")
                     .subtitle(subtitle)
                     .command(repos::add_command(self.repositories.downgrade()))
+                    .command(settings)
                     .content(self.repositories.clone());
-                frame.child(page)
+                frame.child(page).into_any_element()
             }
-            Stage::Repository(view) => frame.child(view.clone()),
-        }
+            Stage::Repository(view) => frame.child(view.clone()).into_any_element(),
+        };
+        column()
+            .size_full()
+            .key_context(CONTEXT)
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|_, _: &OpenSettings, window, cx| {
+                crate::settings_dialog::open(window, cx)
+            }))
+            .child(content)
     }
 }

@@ -33,7 +33,10 @@ pub fn init(cx: &mut App) {
     cx.set_global(Session::default());
 
     // Anything reachable only by pointer is reachable only slowly.
-    cx.bind_keys([KeyBinding::new("ctrl-q", Quit, None)]);
+    cx.bind_keys([
+        KeyBinding::new("ctrl-q", Quit, None),
+        KeyBinding::new("ctrl-,", OpenSettings, Some(CONTEXT)),
+    ]);
     cx.on_action(|_: &Quit, cx| cx.quit());
 
     // One window is the whole application: nothing runs behind it.

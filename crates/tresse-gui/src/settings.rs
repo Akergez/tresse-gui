@@ -73,6 +73,40 @@ impl Settings {
         result
     }
 
+    pub fn theme(&self) -> Option<String> {
+        self.get("theme")
+    }
+
+    pub fn set_theme(&mut self, theme: &str) {
+        self.set("theme", Some(theme));
+    }
+
+    pub fn color(&self) -> Option<String> {
+        self.get("color")
+    }
+
+    pub fn set_color(&mut self, color: &str) {
+        self.set("color", Some(color));
+    }
+
+    pub fn interface_size(&self) -> Option<String> {
+        self.get("interface_size")
+    }
+
+    pub fn set_interface_size(&mut self, size: &str) {
+        self.set("interface_size", Some(size));
+    }
+
+    /// The colour the system last said is its own, so the next launch starts
+    /// in it before the system is asked again.
+    pub fn system_color(&self) -> Option<String> {
+        self.get("system_color")
+    }
+
+    pub fn set_system_color(&mut self, color: Option<String>) {
+        self.set("system_color", color);
+    }
+
     fn save(&self) -> std::io::Result<()> {
         write_atomically(&self.file, &Value::Object(self.values.clone()).to_string())
     }

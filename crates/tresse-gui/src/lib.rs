@@ -20,6 +20,7 @@ mod paths;
 mod repo;
 mod repos;
 mod settings;
+mod settings_dialog;
 mod shell;
 mod sync_engine;
 mod ui;

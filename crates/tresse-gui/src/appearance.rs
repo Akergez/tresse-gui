@@ -1,38 +1,397 @@
 //! Light or dark, in which colours, and how large.
 //!
-//! Stage S6 brings the full choice: light, dark or the system's, a Material
-//! You scheme made from the system's colour or one of ours, and the
-//! interface size, all kept in `settings.json`. Until then a "System" theme
-//! is followed and the rem is the library's own base font.
+//! Three choices, each kept in `settings.json`. For the first two "System" is
+//! the default and means what the desktop says right now — and again whenever
+//! it changes its mind, which a desktop on a day/night schedule does twice a
+//! day.
+//!
+//! The colours are a Material You scheme (`gpui-adaptive-colors`): the
+//! library makes a light and a dark theme from one colour and puts them
+//! behind the toolkit's two modes, so choosing between light and dark here
+//! goes on being a matter of `Theme::change`.
 
-use gpui_adaptive::theme::Theme;
-use gpui_adaptive_colors::{Color, Options};
+use gpui_adaptive::ActiveScale as _;
+use gpui_adaptive::theme::{Theme, ThemeMode};
+use gpui_adaptive_colors::{AdaptiveColors, Color, Options, Seed, Source};
 use gpui_kit::{App, Pixels, Window};
 
+use crate::settings::Settings;
+
+/// The colours offered beside the system's, each as it is stored and as it
+/// is named. They are seeds, not paint: a scheme takes the hue of one and
+/// chooses its own lightness.
+pub const SEEDS: [(&str, &str); 7] = [
+    ("#2f9e6e", "Green"),
+    ("#00838f", "Teal"),
+    ("#0b57d0", "Blue"),
+    ("#6750a4", "Violet"),
+    ("#e91e63", "Pink"),
+    ("#d93025", "Red"),
+    ("#c88800", "Amber"),
+];
+
 /// The colour where the system has none to give: the application icon's
-/// green.
+/// green, which is also the first of [`SEEDS`].
 const OWN_COLOR: Color = Color::from_u32(0x2f9e6e);
+
+/// The system's colour, or one of ours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorChoice {
+    #[default]
+    System,
+    Seed(Color),
+}
+
+impl ColorChoice {
+    fn stored(self) -> String {
+        match self {
+            ColorChoice::System => "system".to_string(),
+            ColorChoice::Seed(color) => color.to_hex(),
+        }
+    }
+
+    /// Anything that is not a colour is the default, as with the theme.
+    fn parse(stored: &str) -> Self {
+        Color::parse_hex(stored).map_or(ColorChoice::System, ColorChoice::Seed)
+    }
+
+    fn source(self) -> Source {
+        match self {
+            ColorChoice::System => Source::System,
+            ColorChoice::Seed(color) => color.into(),
+        }
+    }
+}
+
+pub fn color_choice(cx: &App) -> ColorChoice {
+    // A screenshot is of one colour scheme; `TRESSE_GUI_COLOR` pins it
+    // whatever the settings and the desktop say.
+    std::env::var("TRESSE_GUI_COLOR")
+        .ok()
+        .or_else(|| Settings::global(cx).color())
+        .map(|stored| ColorChoice::parse(&stored))
+        .unwrap_or_default()
+}
+
+pub fn set_color_choice(choice: ColorChoice, cx: &mut App) {
+    Settings::update(cx, |settings| settings.set_color(&choice.stored()));
+    // Read back rather than taken from `choice`: a pinned colour stays.
+    gpui_adaptive_colors::set_source(color_choice(cx).source(), cx);
+}
 
 /// Hands the theme's colours to the scheme. Once, at startup, before the
 /// first [`apply`].
 pub fn init(cx: &mut App) {
-    gpui_adaptive_colors::init(Options::new(OWN_COLOR), cx);
+    let remembered = Settings::global(cx)
+        .system_color()
+        .and_then(|stored| stored.parse::<Seed>().ok());
+    gpui_adaptive_colors::init(
+        Options::new(OWN_COLOR)
+            .source(color_choice(cx).source())
+            .remembered(remembered),
+        cx,
+    );
+    // The system is asked off the main thread, so its answer comes after the
+    // first frame. Kept, it is what the next launch starts with.
+    cx.observe_global::<AdaptiveColors>(|cx| {
+        let said = AdaptiveColors::global(cx)
+            .system_seed()
+            .map(|seed| seed.to_string());
+        if Settings::global(cx).system_color() != said {
+            Settings::update(cx, |settings| settings.set_system_color(said));
+        }
+    })
+    .detach();
+    // The desktop's text may come after the first frame too (see
+    // `gpui_android_glue::font`); the sizes are put on when it does.
+    cx.observe_global::<gpui_android_glue::DesktopText>(|cx| {
+        apply_size(cx);
+        cx.refresh_windows();
+    })
+    .detach();
 }
 
-/// The rem the interface is drawn at.
+/// Light, dark, or whatever the system is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThemeChoice {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemeChoice {
+    pub const ALL: [ThemeChoice; 3] = [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeChoice::System => "System",
+            ThemeChoice::Light => "Light",
+            ThemeChoice::Dark => "Dark",
+        }
+    }
+
+    fn stored(self) -> &'static str {
+        match self {
+            ThemeChoice::System => "system",
+            ThemeChoice::Light => "light",
+            ThemeChoice::Dark => "dark",
+        }
+    }
+
+    /// Anything unrecognised is the default: a settings file from a later
+    /// version must not make this one refuse to draw.
+    fn parse(stored: &str) -> Self {
+        match stored {
+            "light" => ThemeChoice::Light,
+            "dark" => ThemeChoice::Dark,
+            _ => ThemeChoice::System,
+        }
+    }
+}
+
+/// How large everything is drawn. Every size in the interface is in rems, so
+/// this one factor on the rem scales text, controls, spacing and charts
+/// together; nothing is sized apart from it.
+///
+/// On a desktop the rem is calibrated so that Regular draws running text at
+/// the size the desktop's own text is drawn at ([`apply_size`]); Compact and
+/// Large are a step either side of it. On a phone the system has already
+/// scaled everything to be read at the distance it is held, and Compact is
+/// that size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(target_os = "android", allow(dead_code))]
+pub enum InterfaceSize {
+    Compact,
+    #[default]
+    Regular,
+    Large,
+}
+
+#[cfg_attr(target_os = "android", allow(dead_code))]
+impl InterfaceSize {
+    pub const ALL: [InterfaceSize; 3] = [
+        InterfaceSize::Compact,
+        InterfaceSize::Regular,
+        InterfaceSize::Large,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            InterfaceSize::Compact => "Compact",
+            InterfaceSize::Regular => "Regular",
+            InterfaceSize::Large => "Large",
+        }
+    }
+
+    fn stored(self) -> &'static str {
+        match self {
+            InterfaceSize::Compact => "compact",
+            InterfaceSize::Regular => "regular",
+            InterfaceSize::Large => "large",
+        }
+    }
+
+    fn parse(stored: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|size| size.stored() == stored)
+            .unwrap_or_else(Self::for_platform)
+    }
+
+    /// The size nobody has chosen yet. On a desktop it is Regular: the
+    /// desktop's own text size, which the rem is calibrated to. A phone is
+    /// held closer than a monitor stands, and its system has already scaled
+    /// everything to be read at that distance: there Compact is the right
+    /// size, and a step up from it is too much.
+    pub fn for_platform() -> Self {
+        if cfg!(target_os = "android") {
+            InterfaceSize::Compact
+        } else {
+            InterfaceSize::default()
+        }
+    }
+
+    /// The factor on the rem. On a desktop the rem is calibrated so that
+    /// Regular is the desktop's text size ([`apply_size`]); on a phone
+    /// Compact is. The steps either way are the application's own.
+    pub fn factor(self) -> f32 {
+        match self {
+            InterfaceSize::Compact => 1.0,
+            InterfaceSize::Regular => 1.125,
+            InterfaceSize::Large => 1.25,
+        }
+    }
+}
+
+/// The component library's own rem and monospace size, noted before anything
+/// scales them: a factor is applied to these, never to its own result.
+static LIBRARY_SIZES: std::sync::OnceLock<(Pixels, Pixels)> = std::sync::OnceLock::new();
+
+pub fn interface_size(cx: &App) -> InterfaceSize {
+    // A phone's font size setting is already in the window's scale; an
+    // application zoom on top of it would make the text larger than the
+    // system's.
+    #[cfg(target_os = "android")]
+    {
+        let _ = cx;
+        return InterfaceSize::Compact;
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        // A scenario's click coordinates are for one size;
+        // `TRESSE_GUI_UI_SIZE` pins it whatever the settings say.
+        std::env::var("TRESSE_GUI_UI_SIZE")
+            .ok()
+            .or_else(|| Settings::global(cx).interface_size())
+            .map(|stored| InterfaceSize::parse(&stored))
+            .unwrap_or_else(InterfaceSize::for_platform)
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn set_interface_size(size: InterfaceSize, cx: &mut App) {
+    Settings::update(cx, |settings| settings.set_interface_size(size.stored()));
+    apply_size(cx);
+    cx.refresh_windows();
+}
+
+/// The rem the interface is drawn at: the base, times the chosen size.
 pub fn rem(cx: &App) -> Pixels {
-    Theme::global(cx).font_size
+    base_sizes(cx).0 * interface_size(cx).factor()
 }
 
-/// Makes the theme say what the system says. Call at startup, again once
+/// The rem and monospace size before the chosen factor: the library's own,
+/// except that on a desktop the rem is calibrated so that the default size
+/// draws running text at the size the desktop's own text is drawn at.
+fn base_sizes(cx: &App) -> (Pixels, Pixels) {
+    let (library, library_mono) = library_sizes(cx);
+    let Some(text) = gpui_android_glue::desktop_text(cx) else {
+        return (library, library_mono);
+    };
+    // The skin draws running text at this fraction of a rem, and `for_platform`
+    // is the size nobody has chosen yet: the one calibrated to the desktop's.
+    let body = cx.scale().body.0;
+    let default = InterfaceSize::for_platform().factor();
+    (
+        text.size
+            .map_or(library, |size| rem_for(size, body, default)),
+        text.mono_size.map_or(library_mono, |size| size / default),
+    )
+}
+
+/// The rem that draws text of `size` at the default interface size: `body`
+/// is the fraction of a rem the skin draws running text at, and `default`
+/// the default size's factor on the rem.
+fn rem_for(size: Pixels, body: f32, default: f32) -> Pixels {
+    size / (body * default)
+}
+
+fn library_sizes(cx: &App) -> (Pixels, Pixels) {
+    *LIBRARY_SIZES.get_or_init(|| {
+        let theme = Theme::global(cx);
+        (theme.font_size, theme.mono_font_size)
+    })
+}
+
+/// Makes the theme's sizes say what the settings say. The window takes its
+/// rem from the theme on every frame, so this is all it takes.
+fn apply_size(cx: &mut App) {
+    let (font, mono) = base_sizes(cx);
+    let factor = interface_size(cx).factor();
+    let theme = Theme::global_mut(cx);
+    theme.font_size = font * factor;
+    theme.mono_font_size = mono * factor;
+}
+
+pub fn theme_choice(cx: &App) -> ThemeChoice {
+    Settings::global(cx)
+        .theme()
+        .map(|stored| ThemeChoice::parse(&stored))
+        .unwrap_or_default()
+}
+
+pub fn set_theme_choice(choice: ThemeChoice, window: &mut Window, cx: &mut App) {
+    Settings::update(cx, |settings| settings.set_theme(choice.stored()));
+    apply(Some(window), cx);
+}
+
+/// Makes the theme say what the settings say. Call at startup, again once
 /// there is a window — on Linux only a window knows what the desktop's
-/// appearance is — and whenever it changes.
+/// appearance is — and whenever the choice changes.
 pub fn apply(window: Option<&mut Window>, cx: &mut App) {
-    let mode = gpui_android_glue::appearance::system_mode(window.as_deref(), cx);
+    let mode = match theme_choice(cx) {
+        ThemeChoice::Light => ThemeMode::Light,
+        ThemeChoice::Dark => ThemeMode::Dark,
+        ThemeChoice::System => gpui_android_glue::appearance::system_mode(window.as_deref(), cx),
+    };
     // The clock and the icons beside it are drawn over our own top bar, and
     // have to be told which of its colours to stand out against.
     gpui_android_glue::appearance::set_status_bar_for(mode);
+    // Before the first change of theme, so the sizes noted are the library's.
+    library_sizes(cx);
     if Theme::global(cx).mode != mode {
         Theme::change(mode, None, cx);
+    }
+    // A change of theme may put the library's sizes back.
+    apply_size(cx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_theme_choice_survives_being_stored() {
+        for choice in ThemeChoice::ALL {
+            assert_eq!(ThemeChoice::parse(choice.stored()), choice);
+        }
+    }
+
+    #[test]
+    fn an_unknown_theme_is_the_system_one() {
+        assert_eq!(ThemeChoice::parse("sepia"), ThemeChoice::System);
+        assert_eq!(ThemeChoice::parse(""), ThemeChoice::System);
+    }
+
+    #[test]
+    fn the_default_size_draws_text_at_the_desktop_size() {
+        let desktop = gpui_kit::px(10.0 * 96.0 / 72.0);
+        let body = 0.8125;
+        let factor = InterfaceSize::Regular.factor();
+        let rem = rem_for(desktop, body, factor);
+        let drawn = rem * body * factor;
+        assert!((f32::from(drawn) - f32::from(desktop)).abs() < 0.0001);
+        assert!(rem * body * InterfaceSize::Compact.factor() < drawn);
+        assert!(rem * body * InterfaceSize::Large.factor() > drawn);
+    }
+
+    #[test]
+    fn an_interface_size_survives_being_stored_and_only_ever_enlarges() {
+        for size in InterfaceSize::ALL {
+            assert_eq!(InterfaceSize::parse(size.stored()), size);
+            assert!(size.factor() >= 1.0);
+        }
+        assert_eq!(InterfaceSize::parse("enormous"), InterfaceSize::Regular);
+    }
+
+    #[test]
+    fn a_colour_choice_survives_being_stored() {
+        let choices = SEEDS
+            .iter()
+            .map(|(stored, _)| ColorChoice::parse(stored))
+            .chain([ColorChoice::System]);
+        for choice in choices {
+            assert_eq!(ColorChoice::parse(&choice.stored()), choice);
+        }
+        assert_eq!(ColorChoice::parse("mauve"), ColorChoice::System);
+    }
+
+    #[test]
+    fn every_colour_offered_is_a_colour_and_the_first_is_our_own() {
+        for (stored, name) in SEEDS {
+            assert_ne!(ColorChoice::parse(stored), ColorChoice::System, "{name}");
+        }
+        assert_eq!(ColorChoice::parse(SEEDS[0].0), ColorChoice::Seed(OWN_COLOR));
     }
 }
