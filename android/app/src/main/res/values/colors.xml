@@ -3,6 +3,6 @@
     <!-- What the window is before the first frame is drawn: the dark theme's
          background, so the splash does not flash on the way to it. -->
     <color name="gpui_surface">#FF0A0A0A</color>
-    <!-- What the launcher icon's card stands on. -->
-    <color name="launcher_background">#FFFFFFFF</color>
+    <!-- What the launcher icon's folder stands on: the application's green. -->
+    <color name="launcher_background">#FF2F9E6E</color>
 </resources>

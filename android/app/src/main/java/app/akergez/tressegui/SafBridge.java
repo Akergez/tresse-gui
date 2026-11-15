@@ -46,6 +46,32 @@ public final class SafBridge {
         DocumentsContract.Document.COLUMN_LAST_MODIFIED,
     };
 
+    /**
+     * Document ids found during this run, by tree and path. A commit asks for
+     * the same paths thousands of times; walking a path through every parent
+     * on each call is what made a big folder crawl.
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<String, String> IDS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static String key(Uri tree, String path) {
+        return tree + "\u0000" + path;
+    }
+
+    private static void remember(Uri tree, String path, String id) {
+        IDS.put(key(tree, path), id);
+    }
+
+    private static void forget(Uri tree, String path) {
+        String exact = key(tree, path);
+        String prefix = exact + "/";
+        IDS.keySet().removeIf(cached -> cached.equals(exact) || cached.startsWith(prefix));
+    }
+
+    private static String childPath(String dir, String name) {
+        return dir.isEmpty() ? name : dir + "/" + name;
+    }
+
     private static Uri tree(String uri) {
         return Uri.parse(uri);
     }
@@ -84,6 +110,9 @@ public final class SafBridge {
             if (cursor == null) return "[]";
             while (cursor.moveToNext()) {
                 JSONObject row = new JSONObject();
+                String childDoc = cursor.getString(0);
+                String child = childPath(path, cursor.getString(1));
+                remember(tree, child, childDoc);
                 row.put("name", cursor.getString(1));
                 String mime = cursor.isNull(2) ? "" : cursor.getString(2);
                 row.put("dir", DocumentsContract.Document.MIME_TYPE_DIR.equals(mime));
@@ -160,6 +189,7 @@ public final class SafBridge {
             document = DocumentsContract.createDocument(resolver, parentUri,
                     "application/octet-stream", name(path));
             if (document == null) throw new IOException("Could not create " + path);
+            remember(tree, path, DocumentsContract.getDocumentId(document));
         }
         try (OutputStream output = resolver.openOutputStream(document, "wt")) {
             if (output == null) throw new IOException("Could not write " + path);
@@ -185,6 +215,7 @@ public final class SafBridge {
                         DocumentsContract.Document.MIME_TYPE_DIR, part);
                 if (created == null) throw new IOException("Could not create folder " + built);
                 child = DocumentsContract.getDocumentId(created);
+                remember(tree, built.toString(), child);
             }
             id = child;
         }
@@ -199,6 +230,7 @@ public final class SafBridge {
         String id = documentId(resolver, tree, path);
         if (id == null) return;
         delete(context, tree, id, recursive);
+        forget(tree, path);
     }
 
     /**
@@ -244,13 +276,19 @@ public final class SafBridge {
 
     /** The document id of `path`, or null when nothing is there. */
     private static String documentId(ContentResolver resolver, Uri tree, String path) {
+        String cached = IDS.get(key(tree, path));
+        if (cached != null) return cached;
         String id = DocumentsContract.getTreeDocumentId(tree);
-        if (path.isEmpty()) return id;
+        if (path.isEmpty()) {
+            remember(tree, path, id);
+            return id;
+        }
         for (String part : path.split("/")) {
             if (part.isEmpty()) continue;
             id = childId(resolver, tree, id, part);
             if (id == null) return null;
         }
+        remember(tree, path, id);
         return id;
     }
 

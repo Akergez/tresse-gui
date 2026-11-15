@@ -184,6 +184,7 @@ async fn run_sync(engine: Entity<SyncEngine>, record: RepoRecord, cx: &mut Async
         Err(error) => return fail(&engine, &key, error, cx),
     };
 
+    tracing::info!(folder = %key, "reading the folder");
     let committed = cx
         .background_spawn({
             let repo = repo.clone();
@@ -193,11 +194,13 @@ async fn run_sync(engine: Entity<SyncEngine>, record: RepoRecord, cx: &mut Async
     if let Err(error) = committed {
         return fail(&engine, &key, error, cx);
     }
+    tracing::info!(folder = %key, "the folder is read");
 
     engine.update(cx, |engine, cx| {
         engine.phase(&key, Phase::Exchanging);
         cx.notify();
     });
+    tracing::info!(folder = %key, "exchanging with the storage");
     let exchanged = cx
         .background_spawn({
             let repo = repo.clone();
@@ -208,11 +211,13 @@ async fn run_sync(engine: Entity<SyncEngine>, record: RepoRecord, cx: &mut Async
         Ok(counts) => counts,
         Err(error) => return fail(&engine, &key, error, cx),
     };
+    tracing::info!(folder = %key, pulled, pushed, "exchanged");
 
     engine.update(cx, |engine, cx| {
         engine.phase(&key, Phase::Applying);
         cx.notify();
     });
+    tracing::info!(folder = %key, "applying what arrived");
     let settled = cx
         .background_spawn({
             let repo = repo.clone();

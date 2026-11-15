@@ -59,17 +59,30 @@ fn collect(
                 binary,
             },
         ));
+        if files.len() % 1000 == 0 {
+            eprintln!("scanning the folder: {} files…", files.len());
+        }
     }
     Ok(())
 }
 
-/// A file that does not read as UTF-8 is a blob. A file that cannot be read
+/// A file that does not start as UTF-8 is a blob. A file that cannot be read
 /// at all is taken for one too: a commit must not claim to have parsed it.
+///
+/// Only the beginning is read. A phone's storage answers each read with a
+/// binder round trip, and reading a whole video to find out that it is not
+/// text is what made a first commit on a big folder look hung. A truncated
+/// multi-byte character at the sample's edge is text, not a blob.
+const SAMPLE: usize = 64 * 1024;
+
 fn is_binary(vault: &dyn Vault, path: &str) -> bool {
-    vault
-        .read(path)
-        .map(|bytes| std::str::from_utf8(&bytes).is_err())
-        .unwrap_or(true)
+    match vault.read_range(path, 0, SAMPLE) {
+        Ok(bytes) => match std::str::from_utf8(&bytes) {
+            Ok(_) => false,
+            Err(error) => error.error_len().is_some(),
+        },
+        Err(_) => true,
+    }
 }
 
 // ---------------------------------------------------------------------------
