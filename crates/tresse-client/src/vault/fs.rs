@@ -64,7 +64,13 @@ impl FsVault {
         let _ = owner_only;
         let mut file = options.open(&staged)?;
         file.write_all(bytes)?;
-        file.sync_all()?;
+        // A storage that cannot sync a file (a FUSE mount, a phone's picked
+        // tree) still takes the write; only a real failure is one.
+        if let Err(error) = file.sync_all()
+            && error.kind() != io::ErrorKind::Unsupported
+        {
+            return Err(error);
+        }
         drop(file);
         let metadata = fs::metadata(&staged)?;
         Ok((

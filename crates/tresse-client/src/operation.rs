@@ -5,6 +5,7 @@
 //! блокировка ОС на `.tresse/lock.os`, отметка «жив» для фронтендов без неё и
 //! атомарная запись файла операции.
 
+use std::io;
 use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
@@ -48,7 +49,9 @@ pub(crate) fn edit_worktree(
 /// блокировку ОС взять не может: по ней плагин узнаёт, что клиент ещё работает.
 pub struct RepoLock {
     vault: Arc<dyn Vault>,
-    _os_lock: Box<dyn VaultLock>,
+    /// The OS lock, where the storage has one. A storage without `flock` (a
+    /// phone's picked tree, a FUSE mount) works on the record alone.
+    _os_lock: Option<Box<dyn VaultLock>>,
     stop: Option<Sender<()>>,
     heartbeat: Option<JoinHandle<()>>,
 }
@@ -56,10 +59,17 @@ pub struct RepoLock {
 impl RepoLock {
     pub fn acquire(repo: &Repo) -> Result<Self, Failure> {
         let vault = repo.vault().clone();
-        let os_lock = match vault.lock() {
-            Ok(lock) => lock,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+        let (os_lock, nonce) = match vault.lock() {
+            Ok(lock) => (Some(lock), None),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 return Err(busy(read_record(vault.as_ref())).into());
+            }
+            // ENOSYS: the storage does not implement `flock`. Tresse's record
+            // carries the same meaning without it — a nonce and a heartbeat,
+            // which every other client reads and respects.
+            Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+                eprintln!("the storage has no flock; holding the record alone");
+                (None, Some(lock_nonce()))
             }
             Err(error) => return Err(error.into()),
         };
@@ -71,13 +81,15 @@ impl RepoLock {
             return Err(busy(Some(owner)).into());
         }
 
-        write_record(vault.as_ref())?;
+        write_record(vault.as_ref(), os_lock.is_some(), nonce.as_deref())?;
         let beating = vault.clone();
+        let beaten_nonce = nonce.clone();
+        let beaten_lock = os_lock.is_some();
         let (stop, stopped) = mpsc::channel::<()>();
         let heartbeat = std::thread::spawn(move || {
             let interval = Duration::from_millis(HEARTBEAT_INTERVAL_MS);
             while stopped.recv_timeout(interval) == Err(RecvTimeoutError::Timeout) {
-                let _ = write_record(beating.as_ref());
+                let _ = write_record(beating.as_ref(), beaten_lock, beaten_nonce.as_deref());
             }
         });
         Ok(Self {
@@ -104,17 +116,23 @@ fn read_record(vault: &dyn Vault) -> Option<LockRecord> {
     LockRecord::from_json(&vault.read(LOCK_PATH).ok()?)
 }
 
-fn write_record(vault: &dyn Vault) -> std::io::Result<()> {
+fn write_record(vault: &dyn Vault, os_lock: bool, nonce: Option<&str>) -> std::io::Result<()> {
     let bytes = LockRecord {
         app: APP.to_string(),
         pid: Some(std::process::id()),
-        os_lock: true,
+        os_lock,
         heartbeat_ms: now_ms(),
-        nonce: None,
+        nonce: nonce.map(str::to_string),
     }
     .to_json();
     vault.write(LOCK_PATH, &bytes)?;
     Ok(())
+}
+
+/// A nonce for a lock that has no OS lock behind it: what tells two
+/// lock-less holders apart.
+fn lock_nonce() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 fn busy(owner: Option<LockRecord>) -> String {
@@ -327,4 +345,80 @@ fn settle_version(repo: &Repo, version: &str) -> Result<Option<RestoreOutcome>, 
     let outcome = crate::worktree::restore_version(repo, &config, &mut local, version, true)?;
     outcome.report_skipped();
     Ok(Some(outcome))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Repo;
+    use crate::vault::{Entry, FsVault, Meta, VaultLock, Written};
+
+    /// A storage like a phone's picked tree: everything works except flock.
+    struct NoLock(FsVault);
+
+    impl Vault for NoLock {
+        fn list(&self, dir: &str) -> io::Result<Vec<Entry>> {
+            self.0.list(dir)
+        }
+
+        fn metadata(&self, path: &str) -> io::Result<Option<Meta>> {
+            self.0.metadata(path)
+        }
+
+        fn read(&self, path: &str) -> io::Result<Vec<u8>> {
+            self.0.read(path)
+        }
+
+        fn read_range(&self, path: &str, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+            self.0.read_range(path, offset, len)
+        }
+
+        fn write(&self, path: &str, bytes: &[u8]) -> io::Result<Written> {
+            self.0.write(path, bytes)
+        }
+
+        fn remove_file(&self, path: &str) -> io::Result<()> {
+            self.0.remove_file(path)
+        }
+
+        fn remove_dir(&self, path: &str) -> io::Result<()> {
+            self.0.remove_dir(path)
+        }
+
+        fn remove_dir_all(&self, path: &str) -> io::Result<()> {
+            self.0.remove_dir_all(path)
+        }
+
+        fn mkdir_all(&self, dir: &str) -> io::Result<()> {
+            self.0.mkdir_all(dir)
+        }
+
+        fn lock(&self) -> io::Result<Box<dyn VaultLock>> {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "the storage has no flock",
+            ))
+        }
+    }
+
+    #[test]
+    fn a_storage_without_flock_holds_the_record_alone_and_admits_one_holder() {
+        let directory = tempfile::tempdir().unwrap();
+        let vault = std::sync::Arc::new(NoLock(FsVault::open(directory.path()).unwrap()));
+        let repo = Repo::from_vault(vault, "test");
+
+        let held = RepoLock::acquire(&repo).unwrap();
+        let record = read_record(repo.vault().as_ref()).expect("a record is written");
+        assert!(!record.os_lock, "there is no OS lock to claim");
+        assert!(record.nonce.is_some(), "the nonce tells holders apart");
+
+        let error = RepoLock::acquire(&repo)
+            .err()
+            .expect("a second holder must be refused");
+        assert!(error.to_string().contains("another tresse operation"));
+
+        drop(held);
+        assert!(read_record(repo.vault().as_ref()).is_none());
+        RepoLock::acquire(&repo).expect("the record is free again");
+    }
 }
