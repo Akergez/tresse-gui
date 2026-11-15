@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  app.akergez.TresseGui — application icon (128x128)
+  A folder with the two arrows of a round trip: a folder's content going to
+  the storage and what arrived coming back. The tile is the application's
+  green, the same colour the scheme is made from when the system gives none.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="128" height="128" viewBox="0 0 128 128">
+  <!-- The tile -->
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="#2f9e6e"/>
+  <!-- The folder: its back, and its front over the arrows -->
+  <path fill="#1f7a55" d="M 30 40 H 54 L 62 50 H 98 A 8 8 0 0 1 106 58 V 92 A 8 8 0 0 1 98 100 H 30 A 8 8 0 0 1 22 92 V 48 A 8 8 0 0 1 30 40 Z"/>
+  <!-- The two arrows of a round trip -->
+  <path fill="none" stroke="#f2fbf6" stroke-width="7" stroke-linecap="round" d="M 46 70 A 15 15 0 0 1 74 64"/>
+  <path fill="#f2fbf6" d="M 74 54 L 86 66 L 70 70 Z"/>
+  <path fill="none" stroke="#f2fbf6" stroke-width="7" stroke-linecap="round" d="M 82 90 A 15 15 0 0 1 54 96"/>
+  <path fill="#f2fbf6" d="M 54 106 L 42 94 L 58 90 Z"/>
+</svg>

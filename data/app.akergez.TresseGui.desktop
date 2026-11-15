@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Tresse GUI
+GenericName=Folder Sync
+Comment=Keep folders in Tresse and sync them with a server or your own bucket
+Exec=tresse-gui
+Icon=app.akergez.TresseGui
+Terminal=false
+Categories=Utility;FileTools;
+Keywords=tresse;sync;folder;version;history;backup;
+StartupNotify=true
