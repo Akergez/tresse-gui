@@ -23,10 +23,15 @@ use serde_json::{Map, Value};
 /// good sync is kept so the list can say when it last worked.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoRecord {
+    /// An absolute path on a desktop; on a phone, the tree URI the system's
+    /// picker returned.
     pub path: String,
     pub name: String,
     #[serde(default)]
     pub last_sync_at: Option<u64>,
+    /// Whether `path` is a picked tree rather than a path (Android only).
+    #[serde(default)]
+    pub saf: bool,
 }
 
 pub struct Settings {
@@ -89,10 +94,12 @@ impl Settings {
         self.set("color", Some(color));
     }
 
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     pub fn interface_size(&self) -> Option<String> {
         self.get("interface_size")
     }
 
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     pub fn set_interface_size(&mut self, size: &str) {
         self.set("interface_size", Some(size));
     }
@@ -194,6 +201,7 @@ mod tests {
             path: "/home/someone/notes".into(),
             name: "notes".into(),
             last_sync_at: None,
+            saf: false,
         };
         assert!(settings.add_repository(record.clone()));
         assert!(!settings.add_repository(record.clone()));
@@ -224,6 +232,7 @@ mod tests {
             path: "/notes".into(),
             name: "notes".into(),
             last_sync_at: None,
+            saf: false,
         });
         settings.save().unwrap();
 

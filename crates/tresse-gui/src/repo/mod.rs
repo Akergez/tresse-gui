@@ -1,7 +1,6 @@
 //! One folder's page: what its sync did, where it syncs, and what can be done
 //! about either.
 
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui_adaptive::{Command, Fields, Note, Screen, Setting, Tone};
@@ -9,6 +8,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, EventEmitter, SharedString, Window};
 
 use crate::connect;
+use crate::folders;
+use crate::settings::RepoRecord;
 use crate::sync_engine::{self, Phase, SyncEngine};
 use crate::ui::Lucide;
 use tresse_client::RemoteConfig;
@@ -22,8 +23,7 @@ pub enum Event {
 }
 
 pub struct RepoView {
-    path: PathBuf,
-    name: String,
+    record: RepoRecord,
     engine: Entity<SyncEngine>,
     remote: Option<RemoteConfig>,
     problem: Option<String>,
@@ -32,16 +32,10 @@ pub struct RepoView {
 impl EventEmitter<Event> for RepoView {}
 
 impl RepoView {
-    pub fn new(
-        path: PathBuf,
-        name: String,
-        engine: Entity<SyncEngine>,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(record: RepoRecord, engine: Entity<SyncEngine>, cx: &mut Context<Self>) -> Self {
         cx.observe(&engine, |_, _, cx| cx.notify()).detach();
         let mut view = RepoView {
-            path,
-            name,
+            record,
             engine,
             remote: None,
             problem: None,
@@ -55,22 +49,21 @@ impl RepoView {
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.problem = None;
         self.remote = None;
-        if !self.path.is_dir() {
+        if !self.record.saf && !std::path::Path::new(&self.record.path).is_dir() {
             self.problem = Some("The folder is not there.".to_string());
         } else {
-            match tresse_client::Repo::open_fs(&self.path).and_then(|repo| {
-                tresse_client::config::read_remote(repo.vault().as_ref())
-                    .map_err(std::io::Error::other)
-            }) {
+            match folders::open(&self.record)
+                .and_then(|repo| tresse_client::config::read_remote(repo.vault().as_ref()))
+            {
                 Ok(remote) => self.remote = remote,
-                Err(error) => self.problem = Some(error.to_string()),
+                Err(error) => self.problem = Some(error),
             }
         }
         cx.notify();
     }
 
     fn status_note(&self, cx: &Context<Self>) -> Note {
-        let status = self.engine.read(cx).status(&self.key());
+        let status = self.engine.read(cx).status(&self.record.path);
         match status.phase {
             Phase::Idle => Note::new("Not synced yet."),
             Phase::Failed => Note::new(
@@ -90,7 +83,7 @@ impl RepoView {
     }
 
     fn render_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let key = self.key();
+        let key = self.record.path.clone();
         let status = self.engine.read(cx).status(&key);
         let connection = Setting::new("Connection").detail(match &self.remote {
             Some(remote) => connect::describe(remote),
@@ -115,15 +108,11 @@ impl RepoView {
             .child(folder)
             .children(last)
     }
-
-    fn key(&self) -> String {
-        self.path.display().to_string()
-    }
 }
 
 impl Render for RepoView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let key = self.key();
+        let key = self.record.path.clone();
         let running = self.engine.read(cx).status(&key).phase.is_running();
         let this = cx.entity().downgrade();
 
@@ -141,7 +130,7 @@ impl Render for RepoView {
                 let this = this.clone();
                 move |_, cx| {
                     this.update(cx, |view, cx| {
-                        sync_engine::sync(&view.engine, view.path.clone(), cx)
+                        sync_engine::sync(&view.engine, view.record.clone(), cx)
                     })
                     .ok();
                 }
@@ -153,7 +142,7 @@ impl Render for RepoView {
                 let this = this.clone();
                 move |_, cx| {
                     this.update(cx, |view, cx| {
-                        sync_engine::apply(&view.engine, view.path.clone(), cx)
+                        sync_engine::apply(&view.engine, view.record.clone(), cx)
                     })
                     .ok();
                 }
@@ -171,18 +160,21 @@ impl Render for RepoView {
                         })
                     };
                     this.update(cx, |view, cx| {
-                        connect::open(view.path.clone(), changed, window, cx);
+                        connect::open(view.record.clone(), changed, window, cx);
                     })
                     .ok();
                 }
             });
 
-        Screen::new(SharedString::from(format!("repo-{key}")), self.name.clone())
-            .subtitle(key)
-            .up(Some(back))
-            .command(sync)
-            .command(apply)
-            .command(configure)
-            .content(self.render_content(cx))
+        Screen::new(
+            SharedString::from(format!("repo-{key}")),
+            self.record.name.clone(),
+        )
+        .subtitle(key)
+        .up(Some(back))
+        .command(sync)
+        .command(apply)
+        .command(configure)
+        .content(self.render_content(cx))
     }
 }

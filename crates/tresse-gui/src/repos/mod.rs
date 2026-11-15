@@ -6,7 +6,6 @@
 //! folder's own files — its `tresse.toml`, its remote — stay the only place
 //! that describes it.
 
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui_adaptive::{
@@ -16,6 +15,7 @@ use gpui_adaptive::{
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, EventEmitter, SharedString, WeakEntity, Window, div};
 
+use crate::folders;
 use crate::settings::{RepoRecord, Settings};
 use crate::sync_engine::{self, SyncEngine};
 use crate::ui::Lucide;
@@ -24,17 +24,15 @@ use tresse_client::{RemoteConfig, StorageType};
 /// What the list asks the window to do.
 pub enum Event {
     /// Open one folder's page.
-    Open(PathBuf),
+    Open(RepoRecord),
 }
 
 /// One folder as the list shows it.
 struct Row {
-    path: PathBuf,
-    name: String,
+    record: RepoRecord,
     remote: Option<RemoteConfig>,
-    last_sync_at: Option<u64>,
-    /// What is wrong with the folder itself: it moved, or it is not (or no
-    /// longer) a Tresse repository.
+    /// What is wrong with the folder itself: it moved, the grant is gone, or
+    /// it is not (or no longer) a Tresse repository.
     problem: Option<String>,
 }
 
@@ -42,33 +40,39 @@ impl Row {
     /// Reads what the folder says about itself. Never writes: a folder that
     /// moved is reported, not recreated.
     fn read(record: &RepoRecord) -> Self {
-        let path = PathBuf::from(&record.path);
         let mut row = Row {
-            path: path.clone(),
-            name: record.name.clone(),
+            record: record.clone(),
             remote: None,
-            last_sync_at: record.last_sync_at,
             problem: None,
         };
-        if !path.is_dir() {
+        if !record.saf && !std::path::Path::new(&record.path).is_dir() {
             row.problem = Some("The folder is not there.".to_string());
             return row;
         }
-        if !path.join(".tresse").is_dir() {
-            row.problem = Some("Not a Tresse repository here.".to_string());
-            return row;
+        let repo = match folders::open(record) {
+            Ok(repo) => repo,
+            Err(error) => {
+                row.problem = Some(error);
+                return row;
+            }
+        };
+        match repo.vault().metadata(".tresse") {
+            Ok(Some(meta)) if meta.is_dir => {}
+            Ok(_) => {
+                row.problem = Some("Not a Tresse repository here.".to_string());
+                return row;
+            }
+            Err(error) => {
+                row.problem = Some(error.to_string());
+                return row;
+            }
         }
-        match read_remote(&path) {
+        match tresse_client::config::read_remote(repo.vault().as_ref()) {
             Ok(remote) => row.remote = remote,
             Err(error) => row.problem = Some(error),
         }
         row
     }
-}
-
-fn read_remote(path: &std::path::Path) -> Result<Option<RemoteConfig>, String> {
-    let repo = tresse_client::Repo::open_fs(path).map_err(|error| error.to_string())?;
-    tresse_client::config::read_remote(repo.vault().as_ref())
 }
 
 /// The list itself, and what can be done from it.
@@ -104,8 +108,8 @@ impl Repositories {
             .collect();
     }
 
-    fn contains(&self, path: &std::path::Path) -> bool {
-        self.rows.iter().any(|row| row.path == path)
+    fn contains(&self, path: &str) -> bool {
+        self.rows.iter().any(|row| row.record.path == path)
     }
 
     /// Ask the system for a folder, then decide what kind of folder it is.
@@ -128,7 +132,15 @@ impl Repositories {
                 }
                 .await;
                 this.update_in(cx, |this, window, cx| match result {
-                    Ok(Some(path)) => this.choose(path, window, cx),
+                    Ok(Some(path)) => {
+                        let record = RepoRecord {
+                            name: folders::folder_name(&path),
+                            path: path.display().to_string(),
+                            last_sync_at: None,
+                            saf: false,
+                        };
+                        this.choose(record, window, cx);
+                    }
                     Ok(None) => {}
                     Err(error) => Notice::error(error).push(window, cx),
                 })
@@ -138,31 +150,59 @@ impl Repositories {
         }
         #[cfg(target_os = "android")]
         {
-            let _ = window;
-            // Stage S5 brings Android's directory picker.
-            Notice::new("Picking a folder on the phone comes with the storage stage.")
-                .push(window, cx);
+            cx.spawn_in(window, async move |this, cx| {
+                let picked = cx
+                    .background_spawn(async { crate::saf::pick_folder() })
+                    .await;
+                this.update_in(cx, |this, window, cx| match picked {
+                    Ok(Some((uri, name))) => {
+                        let record = RepoRecord {
+                            name,
+                            path: uri,
+                            last_sync_at: None,
+                            saf: true,
+                        };
+                        this.choose(record, window, cx);
+                    }
+                    Ok(None) => {}
+                    Err(error) => Notice::error(error).push(window, cx),
+                })
+                .ok();
+            })
+            .detach();
         }
     }
 
     /// An existing repository is added at once; anything else is asked about
     /// before a history is started in it.
-    fn choose(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        if self.contains(&path) {
+    fn choose(&mut self, record: RepoRecord, window: &mut Window, cx: &mut Context<Self>) {
+        if self.contains(&record.path) {
             Notice::new("This folder is already in the list.").push(window, cx);
             return;
         }
-        if path.join(".tresse").is_dir() {
-            let name = folder_name(&path);
-            self.register(path, cx);
+        let existing = match folders::open(&record) {
+            Ok(repo) => repo
+                .vault()
+                .metadata(".tresse")
+                .ok()
+                .flatten()
+                .is_some_and(|meta| meta.is_dir),
+            Err(error) => {
+                Notice::error(error).push(window, cx);
+                return;
+            }
+        };
+        if existing {
+            let name = record.name.clone();
+            self.register(record, cx);
             Notice::new(format!("Added “{name}”."))
                 .tone(Tone::Success)
                 .push(window, cx);
             return;
         }
         let this = cx.weak_entity();
-        let target = path.clone();
-        let name = folder_name(&path);
+        let target = record.clone();
+        let name = record.name.clone();
         let make =
             Command::new("make-repository", "Make repository").on_trigger(move |window, cx| {
                 this.update(cx, |this, cx| {
@@ -182,26 +222,25 @@ impl Repositories {
         .open(window, cx);
     }
 
-    fn make_repository(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    fn make_repository(&mut self, record: RepoRecord, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
-        let target = path.clone();
+        let target = record.clone();
         cx.spawn_in(window, async move |_, cx| {
             let result = cx
                 .background_spawn({
-                    let path = target.clone();
+                    let record = target.clone();
                     async move {
-                        let repo =
-                            tresse_client::Repo::open_fs(&path).map_err(|e| e.to_string())?;
+                        let repo = folders::open(&record)?;
                         tresse_client::init(&repo)?;
                         Ok::<_, String>(())
                     }
                 })
                 .await;
             this.update_in(cx, |this, window, cx| {
-                let name = folder_name(&path);
+                let name = record.name.clone();
                 match result {
                     Ok(()) => {
-                        this.register(path, cx);
+                        this.register(record, cx);
                         Notice::new(format!("Made “{name}” a Tresse repository."))
                             .tone(Tone::Success)
                             .push(window, cx);
@@ -217,12 +256,7 @@ impl Repositories {
         .detach();
     }
 
-    fn register(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let record = RepoRecord {
-            path: path.display().to_string(),
-            name: folder_name(&path),
-            last_sync_at: None,
-        };
+    fn register(&mut self, record: RepoRecord, cx: &mut Context<Self>) {
         Settings::update(cx, |settings| settings.add_repository(record));
         self.reload(cx);
         cx.notify();
@@ -235,10 +269,10 @@ impl Repositories {
     }
 
     fn row(&self, row: &Row, cx: &mut Context<Self>) -> ListRow {
-        let key = row.path.display().to_string();
+        let key = row.record.path.clone();
         let status = self.engine.read(cx).status(&key);
         let id = SharedString::from(format!("folder-{key}"));
-        let mut list_row = ListRow::new(id, row.name.clone())
+        let mut list_row = ListRow::new(id, row.record.name.clone())
             .leading(Tile::new(Lucide::Folder, cx.colors().accent))
             .subtitle(key.clone());
         if status.phase.is_running() {
@@ -262,7 +296,7 @@ impl Repositories {
                 }
                 (None, Some(remote)) => {
                     let mut label = storage_label(remote.storage_type).to_string();
-                    if let Some(at) = status.finished_at.or(row.last_sync_at) {
+                    if let Some(at) = status.finished_at.or(row.record.last_sync_at) {
                         label.push_str(&format!(" · {}", sync_engine::clock(at)));
                     }
                     list_row = list_row.trailing(div().text_color(cx.colors().muted).child(label));
@@ -275,9 +309,9 @@ impl Repositories {
         }
         let open = {
             let this = cx.weak_entity();
-            let path = row.path.clone();
+            let record = row.record.clone();
             move |_: &mut Window, cx: &mut App| {
-                this.update(cx, |_, cx| cx.emit(Event::Open(path.clone())))
+                this.update(cx, |_, cx| cx.emit(Event::Open(record.clone())))
                     .ok();
             }
         };
@@ -287,15 +321,16 @@ impl Repositories {
 
     fn row_actions(&self, row: &Row, cx: &mut Context<Self>) -> ItemActions {
         let this: WeakEntity<Self> = cx.weak_entity();
-        let path = row.path.display().to_string();
-        let name = row.name.clone();
-        let folder = row.path.clone();
+        let path = row.record.path.clone();
+        let name = row.record.name.clone();
+        let record = row.record.clone();
         let remove_id = SharedString::from(format!("remove-folder-{path}"));
         let configure_id = SharedString::from(format!("configure-folder-{path}"));
         let sync_id = SharedString::from(format!("sync-folder-{path}"));
         let engine = self.engine.clone();
         let sync_engine = engine.clone();
-        let sync_target = row.path.clone();
+        let sync_record = record.clone();
+        let configure_record = record.clone();
         let changed_this = this.clone();
         let changed: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, cx| {
             changed_this
@@ -311,19 +346,22 @@ impl Repositories {
             .command(
                 Command::new(sync_id, "Sync now").on_trigger(move |_, cx| {
                     sync_this
-                        .update(cx, |_, cx| sync_engine::sync(&sync_engine, sync_target.clone(), cx))
+                        .update(cx, |_, cx| {
+                            sync_engine::sync(&sync_engine, sync_record.clone(), cx)
+                        })
                         .ok();
                 }),
             )
             .command(
                 Command::new(configure_id, "Configure connection…").on_trigger(move |window, cx| {
-                    crate::connect::open(folder.clone(), changed.clone(), window, cx);
+                    crate::connect::open(configure_record.clone(), changed.clone(), window, cx);
                 }),
             )
             .command(
                 Command::new(remove_id, "Remove from list")
                     .destructive()
                     .on_trigger(move |window, cx| {
+                        let path = path.clone();
                         this.update(cx, |this, cx| this.remove(&path, cx)).ok();
                         Notice::new(format!(
                             "Removed “{name}” from the list. The folder and its history stay where they are."
@@ -367,13 +405,6 @@ fn storage_label(storage: StorageType) -> &'static str {
     }
 }
 
-pub(crate) fn folder_name(path: &std::path::Path) -> String {
-    path.file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| path.display().to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,8 +413,9 @@ mod tests {
     fn record(path: &std::path::Path) -> RepoRecord {
         RepoRecord {
             path: path.display().to_string(),
-            name: folder_name(path),
+            name: folders::folder_name(path),
             last_sync_at: None,
+            saf: false,
         }
     }
 

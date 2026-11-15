@@ -16,6 +16,7 @@
 
 mod appearance;
 mod connect;
+mod folders;
 mod paths;
 mod repo;
 mod repos;
@@ -24,6 +25,9 @@ mod settings_dialog;
 mod shell;
 mod sync_engine;
 mod ui;
+
+#[cfg(target_os = "android")]
+mod saf;
 
 /// Names the application to the system. The directories the settings live in
 /// are named after it, so it must never change.
@@ -53,6 +57,7 @@ fn start(cx: &mut gpui_kit::App) {
     gpui_adaptive::init(input_mode(), cx);
     settings::Settings::install(cx);
     sync_engine::SyncEngine::install(cx);
+    connect::install(cx);
     appearance::init(cx);
     appearance::apply(None, cx);
     shell::init(cx);

@@ -16,19 +16,28 @@ repository with `./gradlew -PglueLocal …` (and the path variant of the crate
 in `Cargo.toml`). The Gradle project comes from gpui-mobile's example, under
 the same licence terms.
 
-The ledger and the settings are kept in the application's private directory
-(`android_main` in `crates/tresse-gui/src/lib.rs` has gpui-android-glue point the XDG variables
-at it). The manifest declares the network permission and nothing else: no
-storage permission exists to be asked for.
+The settings are kept in the application's private directory (`android_main`
+in `crates/tresse-gui/src/lib.rs` has gpui-android-glue point the XDG variables
+at it). The folders themselves are the person's, anywhere on the phone: each
+is picked with the system's folder picker, and the application keeps the grant
+to that one tree. The manifest declares the network permission and nothing
+else: no storage permission exists to be asked for.
 
-CSV import and export use the Android Storage Access Framework. **Import CSV…**
-opens the system document picker; **Export CSV…** opens the system save dialog.
-Choosing a document grants access only to that document. The import is copied
-to the private cache while the temporary read grant is active; export writes
-through `ContentResolver` while the temporary write grant is active. Cancelling
-either picker makes no change to the ledger. No persistent URI access or
-`READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, or `MANAGE_EXTERNAL_STORAGE`
-permission is requested.
+## Picking folders
+
+**Add folder…** opens the Storage Access Framework's tree picker
+(`app.akergez.tressegui.TreePicker`), takes a persistable read-and-write grant
+on the chosen tree and remembers the URI in `settings.json`. Everything after
+that goes through `app.akergez.tressegui.SafBridge`: listing a directory,
+reading a byte range, writing a file, creating directories, deleting and
+opening the repository lock. The Rust half, `crates/tresse-gui/src/saf.rs`,
+implements the same `Vault` the desktop's paths do, so the client cannot tell a
+phone's tree from a folder on a disk.
+
+When the grant is gone — the folder was removed, or the system dropped the
+permission — the folder says so and offers to be chosen again. No
+`READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, or
+`MANAGE_EXTERNAL_STORAGE` permission is requested.
 
 ## What is needed
 

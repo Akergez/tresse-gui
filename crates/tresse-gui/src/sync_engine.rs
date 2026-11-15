@@ -11,13 +11,12 @@
 //! it is busy.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui_kit::{App, AppContext as _, AsyncApp, Context, Entity, Global, SharedString};
 use tresse_client::Repo;
 
-use crate::settings::Settings;
+use crate::settings::{RepoRecord, Settings};
 
 /// Which step of a sync a folder is in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -131,15 +130,15 @@ impl Global for Engine {}
 
 struct Engine(Entity<SyncEngine>);
 
-/// Sync the folder at `path`: read it, exchange with the storage, apply what
-/// arrived. Does nothing while a sync of the same folder runs.
-pub fn sync<T: 'static>(engine: &Entity<SyncEngine>, path: PathBuf, cx: &mut Context<T>) {
-    start(engine, path, Step::Sync, cx);
+/// Sync the folder `record` names: read it, exchange with the storage, apply
+/// what arrived. Does nothing while a sync of the same folder runs.
+pub fn sync<T: 'static>(engine: &Entity<SyncEngine>, record: RepoRecord, cx: &mut Context<T>) {
+    start(engine, record, Step::Sync, cx);
 }
 
 /// Apply what earlier syncs downloaded, without sending anything new.
-pub fn apply<T: 'static>(engine: &Entity<SyncEngine>, path: PathBuf, cx: &mut Context<T>) {
-    start(engine, path, Step::Apply, cx);
+pub fn apply<T: 'static>(engine: &Entity<SyncEngine>, record: RepoRecord, cx: &mut Context<T>) {
+    start(engine, record, Step::Apply, cx);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -148,8 +147,13 @@ enum Step {
     Apply,
 }
 
-fn start<T: 'static>(engine: &Entity<SyncEngine>, path: PathBuf, step: Step, cx: &mut Context<T>) {
-    let key = path.display().to_string();
+fn start<T: 'static>(
+    engine: &Entity<SyncEngine>,
+    record: RepoRecord,
+    step: Step,
+    cx: &mut Context<T>,
+) {
+    let key = record.path.clone();
     if engine.read(cx).status(&key).phase.is_running() {
         return;
     }
@@ -159,23 +163,23 @@ fn start<T: 'static>(engine: &Entity<SyncEngine>, path: PathBuf, step: Step, cx:
     });
     let engine = engine.clone();
     cx.spawn(async move |_, cx| match step {
-        Step::Sync => run_sync(engine, path, cx).await,
-        Step::Apply => run_apply(engine, path, cx).await,
+        Step::Sync => run_sync(engine, record, cx).await,
+        Step::Apply => run_apply(engine, record, cx).await,
     })
     .detach();
 }
 
-async fn open(path: PathBuf, cx: &mut AsyncApp) -> Result<Repo, String> {
+async fn open(record: RepoRecord, cx: &mut AsyncApp) -> Result<Repo, String> {
     cx.background_spawn({
-        let path = path.clone();
-        async move { Repo::open_fs(&path).map_err(|error| error.to_string()) }
+        let record = record.clone();
+        async move { crate::folders::open(&record) }
     })
     .await
 }
 
-async fn run_sync(engine: Entity<SyncEngine>, path: PathBuf, cx: &mut AsyncApp) {
-    let key = path.display().to_string();
-    let repo = match open(path, cx).await {
+async fn run_sync(engine: Entity<SyncEngine>, record: RepoRecord, cx: &mut AsyncApp) {
+    let key = record.path.clone();
+    let repo = match open(record, cx).await {
         Ok(repo) => repo,
         Err(error) => return fail(&engine, &key, error, cx),
     };
@@ -221,9 +225,9 @@ async fn run_sync(engine: Entity<SyncEngine>, path: PathBuf, cx: &mut AsyncApp) 
     }
 }
 
-async fn run_apply(engine: Entity<SyncEngine>, path: PathBuf, cx: &mut AsyncApp) {
-    let key = path.display().to_string();
-    let repo = match open(path, cx).await {
+async fn run_apply(engine: Entity<SyncEngine>, record: RepoRecord, cx: &mut AsyncApp) {
+    let key = record.path.clone();
+    let repo = match open(record, cx).await {
         Ok(repo) => repo,
         Err(error) => return fail(&engine, &key, error, cx),
     };

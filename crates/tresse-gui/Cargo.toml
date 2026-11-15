@@ -46,6 +46,9 @@ tracing = { workspace = true, features = ["log"] }
 # revision gpui-android-glue builds against, so one copy of the platform ends
 # up in the library.
 gpui-mobile = { package = "gpui-pre-mobile", git = "https://github.com/Akergez/gpui-mobile", rev = "d69470c6f6de0cc005797f8db0553082066eb857" }
+# The Java calls the storage vault makes, and the syscall it flocks with.
+jni = "0.22.4"
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

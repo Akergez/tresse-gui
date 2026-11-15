@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use gpui_adaptive::prim::column;
 use gpui_adaptive::{AppFrame, Command, Screen};
 use gpui_kit::prelude::*;
@@ -7,6 +5,7 @@ use gpui_kit::{Context, Entity, FocusHandle, Subscription, Window};
 
 use crate::repo::{self, RepoView};
 use crate::repos::{self, Repositories};
+use crate::settings::RepoRecord;
 use crate::shell::CONTEXT;
 use crate::shell::OpenSettings;
 use crate::ui::Lucide;
@@ -62,16 +61,15 @@ impl Shell {
     }
 
     fn repositories_event(&mut self, event: &repos::Event, cx: &mut Context<Self>) {
-        let repos::Event::Open(path) = event;
-        self.open_repo(path.clone(), cx);
+        let repos::Event::Open(record) = event;
+        self.open_repo(record.clone(), cx);
     }
 
     /// Opens one folder's page over the list. The list stays alive under it,
     /// so going back finds it as it was.
-    fn open_repo(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let name = repos::folder_name(&path);
+    fn open_repo(&mut self, record: RepoRecord, cx: &mut Context<Self>) {
         let engine = crate::sync_engine::SyncEngine::global(cx);
-        let view = cx.new(|cx| RepoView::new(path, name, engine, cx));
+        let view = cx.new(|cx| RepoView::new(record, engine, cx));
         let subscription =
             cx.subscribe(&view, |shell, view, event: &repo::Event, cx| match event {
                 repo::Event::Back => {

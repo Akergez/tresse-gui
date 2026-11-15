@@ -7551,6 +7551,8 @@ dependencies = [
  "gpui-android-glue",
  "gpui-kit",
  "gpui-pre-mobile",
+ "jni",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
