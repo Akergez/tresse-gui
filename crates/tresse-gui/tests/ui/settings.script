@@ -1,0 +1,14 @@
+# mode: fresh
+# size: 1000x700
+#
+# The settings panel opens over the page, and Escape leaves it as it was.
+wait:2000
+expect:dialog=closed
+key:ctrl-,
+wait:600
+expect:dialog=open
+key:escape
+wait:600
+expect:dialog=closed
+expect:stage=folders
+quit

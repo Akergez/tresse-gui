@@ -1,0 +1,16 @@
+# mode: fresh
+# folder: yes
+# size: 1000x700
+#
+# Adding a folder that already has a Tresse repository in it puts it in the
+# list at once: no question, no history started. The run is given the folder
+# by `TRESSE_GUI_FOLDER`, since a scripted window has no hand to answer the
+# picker with.
+wait:2000
+expect:stage=folders
+expect:folders=0
+key:ctrl-n
+wait:800
+expect:folders=1
+expect:stage=folders
+quit

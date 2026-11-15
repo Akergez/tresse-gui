@@ -1,0 +1,10 @@
+# mode: fresh
+# size: 1000x700
+#
+# A launch with nothing set up shows the page of folders and its empty state,
+# with nothing over it.
+wait:2000
+expect:stage=folders
+expect:folders=0
+expect:dialog=closed
+quit

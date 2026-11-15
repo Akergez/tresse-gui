@@ -20,6 +20,7 @@ mod folders;
 mod paths;
 mod repo;
 mod repos;
+mod script;
 mod settings;
 mod settings_dialog;
 mod shell;

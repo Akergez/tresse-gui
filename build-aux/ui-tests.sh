@@ -10,7 +10,8 @@
 # A scenario is a TRESSE_GUI_SCRIPT (crates/tresse-gui/src/script.rs)
 # kept in a file, one step per line, with what it needs said in its header:
 #
-#   # mode: demo | fresh | legacy      the sample ledger, or an installation with none
+#   # mode: fresh                     an installation with nothing set up yet
+#   # folder: yes                     give the run a Tresse repository to add
 #   # size: 1240x800          the window it was written against
 #   # input: touch            optional: drawn for a finger, as on a phone
 #   # restart: wait:2000;expect:account=Cash;quit   optional second launch
@@ -27,9 +28,7 @@
 # while the keyboard-only ones still hold.
 #
 # Every run gets its own empty XDG directories, so a scenario never sees your
-# ledger or your settings, and no scenario sees what another left. The day is
-# pinned too: the sample ledger is dated relative to today, and a scenario
-# that states how many records there are has to mean one particular day.
+# folders or your settings, and no scenario sees what another left.
 set -Eeuo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -38,7 +37,6 @@ cd -- "$root"
 scenarios_dir=crates/tresse-gui/tests/ui
 app=${TRESSE_GUI_BIN:-target/debug/tresse-gui}
 timeout_s=${UI_TEST_TIMEOUT:-90}
-today=${UI_TEST_TODAY:-2026-10-05}
 
 headless=false
 if [[ ${1:-} == --headless ]]; then
@@ -92,41 +90,9 @@ fi
 work=$(mktemp -d)
 cleanup() {
   [[ -z ${compositor_pid:-} ]] || kill "$compositor_pid" 2>/dev/null || true
-  [[ -z ${registry_pid:-} ]] || kill "$registry_pid" 2>/dev/null || true
   rm -rf -- "$work" ${runtime:+"$runtime"}
 }
 trap cleanup EXIT
-
-# A stand-in for the Zed editor's extension registry, which the settings
-# dialog installs themes from: a scenario must not depend on somebody else's
-# service, or on there being a network at all. It is the two addresses the
-# application asks, as files under a plain web server — the list, and one
-# extension, "sample", packaged the way the registry packages them out of
-# tests/ui/registry/. (The list is an index.html because that is what the
-# server answers a directory with; the application reads it as what it is.)
-# Without python3 there is no stand-in and the scenario that installs a theme
-# fails; the others do not ask.
-registry_port=${UI_TEST_REGISTRY_PORT:-18765}
-if command -v python3 >/dev/null; then
-  registry=$work/registry
-  mkdir -p -- "$registry/extensions/sample"
-  cat > "$registry/extensions/index.html" <<'JSON'
-{"data": [
-  {"id": "sample", "name": "Sample", "description": "A theme written for the tests",
-   "authors": ["Nobody <nobody@example.invalid>"], "download_count": 1234},
-  {"id": "another", "name": "Another", "description": "Listed, never installed",
-   "authors": [], "download_count": 7}
-]}
-JSON
-  tar -czf "$registry/extensions/sample/download" -C "$scenarios_dir/registry" themes
-  python3 -m http.server "$registry_port" --bind 127.0.0.1 --directory "$registry" \
-    >"$work/registry.log" 2>&1 &
-  registry_pid=$!
-  for _ in $(seq 50); do
-    (exec 3<>"/dev/tcp/127.0.0.1/$registry_port") 2>/dev/null && break
-    sleep 0.1
-  done
-fi
 
 header() { sed -n "s/^# *$2: *//p" "$1" | head -n1; }
 
@@ -143,43 +109,25 @@ for file in "${files[@]}"; do
   mkdir -p -- "$home"
   env=(
     XDG_CONFIG_HOME="$home/config" XDG_DATA_HOME="$home/data"
-    TRESSE_GUI_TODAY="$today"
     TRESSE_GUI_SIZE="${size:-1240x800}" TRESSE_GUI_SCRIPT="$script"
-    TRESSE_GUI_THEMES_API="http://127.0.0.1:$registry_port"
   )
   [[ $(header "$file" input) == touch ]] && env+=(TRESSE_GUI_INPUT=touch)
   case $mode in
-    demo) env+=(TRESSE_GUI_DEMO=1) ;;
     fresh) ;;
-    legacy)
-      mkdir -p -- "$home/data/app.akergez.TresseGui/ledger" "$home/config/app.akergez.TresseGui"
-      cp -- "$scenarios_dir/legacy/staging.rdx" "$home/data/app.akergez.TresseGui/ledger/staging.rdx"
-      printf '%s\n' '{"source":42,"remote":{"endpoint":"https://old.invalid","secret_access_key":"old-test-key"},"default_currency":"RUB","theme":"light"}' \
-        > "$home/config/app.akergez.TresseGui/settings.json"
-      ;;
-    *) echo "$name: header must say '# mode: demo', '# mode: fresh' or '# mode: legacy'" >&2; exit 2 ;;
+    *) echo "$name: header must say '# mode: fresh' (a folder fixture is '# folder: yes')" >&2; exit 2 ;;
   esac
+  # A folder the scenario is about, already a Tresse repository: the picker
+  # has no hand to answer it in a scripted run, so the folder is named.
+  if [[ $(header "$file" folder) == yes ]]; then
+    mkdir -p -- "$home/folder/.tresse"
+    printf '[languages.markdown]\nstrategy = "tree-sitter"\n' > "$home/folder/tresse.toml"
+    env+=(TRESSE_GUI_FOLDER="$home/folder")
+  fi
 
   $headless && swaymsg -q output HEADLESS-1 resolution "${size:-1240x800}"
 
   status=0
   env "${env[@]}" timeout "$timeout_s" "$app" >"$home/app.log" 2>&1 || status=$?
-
-  if (( status == 0 )) && [[ $mode == legacy ]]; then
-    [[ -f $home/data/app.akergez.TresseGui/ledger-tresse/ledger.rdx ]] || status=1
-    [[ ! -e $home/data/app.akergez.TresseGui/ledger-tresse/.tresse/remotes.toml ]] || status=1
-    python3 - "$home/config/app.akergez.TresseGui/settings.json" \
-      "$scenarios_dir/legacy/staging.rdx" "$home/data/app.akergez.TresseGui/ledger.pre-tresse/staging.rdx" <<'PY_CHECK' || status=1
-import json, sys
-from pathlib import Path
-assert Path(sys.argv[2]).read_bytes() == Path(sys.argv[3]).read_bytes()
-settings = json.load(open(sys.argv[1]))
-assert 'source' not in settings and 'remote' not in settings
-assert settings['theme'] == 'light' and settings['default_currency'] == 'RUB'
-PY_CHECK
-    env "${env[@]}" TRESSE_GUI_SCRIPT="wait:2000;expect:stage=workspace;expect:records=1;expect:remote=no;expect:dialog=closed;quit" \
-      timeout "$timeout_s" "$app" >"$home/restart.log" 2>&1 || status=$?
-  fi
 
   restart=$(header "$file" restart)
   if (( status == 0 )) && [[ -n $restart ]]; then

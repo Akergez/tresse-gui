@@ -25,6 +25,7 @@ pub fn open_window(cx: &mut App) {
                 window.set_window_title("Tresse GUI");
                 shell.update(cx, |shell, cx| shell.start(window, cx));
             });
+            crate::script::play(handle, cx);
         }
         Err(error) => tracing::error!(%error, "could not open a window"),
     }

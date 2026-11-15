@@ -114,6 +114,21 @@ impl Repositories {
 
     /// Ask the system for a folder, then decide what kind of folder it is.
     pub fn add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A scripted run has no hand to answer a file dialog with: the folder
+        // it is about is named when the application starts. Debug builds
+        // only, so nothing ships with a way around the picker.
+        #[cfg(all(not(target_os = "android"), debug_assertions))]
+        if let Some(path) = std::env::var_os("TRESSE_GUI_FOLDER") {
+            let path = std::path::PathBuf::from(path);
+            let record = RepoRecord {
+                name: folders::folder_name(&path),
+                path: path.display().to_string(),
+                last_sync_at: None,
+                saf: false,
+            };
+            self.choose(record, window, cx);
+            return;
+        }
         #[cfg(not(target_os = "android"))]
         {
             let prompt = cx.prompt_for_paths(gpui_kit::PathPromptOptions {

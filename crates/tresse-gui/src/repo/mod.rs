@@ -44,6 +44,21 @@ impl RepoView {
         view
     }
 
+    /// The folder this page is about.
+    pub fn record(&self) -> &RepoRecord {
+        &self.record
+    }
+
+    /// The connection, when there is one.
+    pub fn remote(&self) -> Option<&RemoteConfig> {
+        self.remote.as_ref()
+    }
+
+    /// What is wrong with the folder itself, when something is.
+    pub fn problem(&self) -> Option<&str> {
+        self.problem.as_deref()
+    }
+
     /// Reads the folder's remote again, after a connection was saved or the
     /// folder changed on disk.
     pub fn reload(&mut self, cx: &mut Context<Self>) {

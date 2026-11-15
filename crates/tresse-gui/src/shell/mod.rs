@@ -16,7 +16,7 @@ mod window_size;
 
 pub use actions::*;
 pub use open_window::open_window;
-pub use shell_view::Shell;
+pub use shell_view::{Shell, Stage};
 
 use gpui_kit::{AnyWindowHandle, App, Entity, Global, KeyBinding};
 
@@ -35,6 +35,7 @@ pub fn init(cx: &mut App) {
     // Anything reachable only by pointer is reachable only slowly.
     cx.bind_keys([
         KeyBinding::new("ctrl-q", Quit, None),
+        KeyBinding::new("ctrl-n", AddFolder, Some(CONTEXT)),
         KeyBinding::new("ctrl-,", OpenSettings, Some(CONTEXT)),
     ]);
     cx.on_action(|_: &Quit, cx| cx.quit());
@@ -49,4 +50,10 @@ pub fn init(cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// The shell of the window, when there is one.
+pub fn current(cx: &App) -> Option<Entity<Shell>> {
+    cx.try_global::<Session>()
+        .and_then(|session| session.window.as_ref().map(|(_, shell)| shell.clone()))
 }

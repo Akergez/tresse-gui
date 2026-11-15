@@ -42,6 +42,14 @@ The first build compiles the toolkit and takes a while. Tests:
 cargo test --workspace
 ```
 
+The interface itself is checked by playing the scenarios in
+`crates/tresse-gui/tests/ui/` into the real application — keyboard and pointer
+steps in, the application's own state out:
+
+```sh
+build-aux/ui-tests.sh --headless
+```
+
 Windows and macOS are built by CI (cross-compiled with `cargo-xwin` and wine
 on Linux, and natively on a macOS runner); the scripts are in `build-aux/`.
 Android is packaged from the same Rust library: see `android/README.md`.

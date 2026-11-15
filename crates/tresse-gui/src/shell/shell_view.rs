@@ -7,7 +7,7 @@ use crate::repo::{self, RepoView};
 use crate::repos::{self, Repositories};
 use crate::settings::RepoRecord;
 use crate::shell::CONTEXT;
-use crate::shell::OpenSettings;
+use crate::shell::{AddFolder, OpenSettings};
 use crate::ui::Lucide;
 
 /// What the window is showing.
@@ -34,6 +34,15 @@ pub struct Shell {
 }
 
 impl Shell {
+    /// What the window is showing, for the scripted checks.
+    pub fn stage(&self) -> &Stage {
+        &self.stage
+    }
+
+    /// The list of folders, for the scripted checks.
+    pub fn repositories(&self) -> &Entity<Repositories> {
+        &self.repositories
+    }
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Only now is there a window to ask what the desktop looks like.
         crate::appearance::apply(Some(window), cx);
@@ -121,6 +130,10 @@ impl Render for Shell {
             .track_focus(&self.focus)
             .on_action(cx.listener(|_, _: &OpenSettings, window, cx| {
                 crate::settings_dialog::open(window, cx)
+            }))
+            .on_action(cx.listener(|shell, _: &AddFolder, window, cx| {
+                let repositories = shell.repositories.clone();
+                repositories.update(cx, |repositories, cx| repositories.add(window, cx));
             }))
             .child(content)
     }
