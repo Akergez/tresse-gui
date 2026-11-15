@@ -7500,7 +7500,7 @@ dependencies = [
 
 [[package]]
 name = "tresse-client"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "base64 0.22.1",
  "libc",
@@ -7541,7 +7541,7 @@ dependencies = [
 
 [[package]]
 name = "tresse-gui"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "chrono",
  "dirs 6.0.0",

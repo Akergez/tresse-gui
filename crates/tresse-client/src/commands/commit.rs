@@ -28,10 +28,17 @@ pub fn run(repo: &Repo) -> Result<(), Box<dyn std::error::Error>> {
     let mut local = open_local_store(repo)?;
     let meta = load_merged_meta(&local)?;
 
-    // App writes can occur within one millisecond and keep the same byte size.
-    // Re-read the worktree instead of declaring those edits unchanged from stat.
+    // The same rule the terminal's commit uses: with versions committed, the
+    // file index says which paths are unchanged, and only the rest is read.
+    // A path the index has never seen — the first commit, or a new file — is
+    // read to learn whether it is text; its nature is then remembered.
     let ignore = config.ignore_rules()?;
-    let (skel, current_index) = build_shape(vault.as_ref(), &ignore, None)?;
+    let previous_index = if meta.versions.is_empty() {
+        None
+    } else {
+        crate::file_index::load(vault.as_ref())
+    };
+    let (skel, current_index) = build_shape(vault.as_ref(), &ignore, previous_index.as_ref())?;
     let disk_source = VaultSource::new(vault.clone());
 
     let missing_base_content =

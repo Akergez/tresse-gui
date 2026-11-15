@@ -135,7 +135,7 @@ fn edits_are_refused_while_another_client_holds_the_repository() {
 }
 
 #[test]
-fn equal_stat_metadata_does_not_hide_a_native_rdx_edit() {
+fn a_file_the_index_knows_is_left_unchanged() {
     let dir = tempfile::tempdir().unwrap();
     let repo = setup(dir.path());
     write(
@@ -166,9 +166,11 @@ fn equal_stat_metadata_does_not_hide_a_native_rdx_edit() {
     .unwrap();
     crate::commit(&repo).unwrap();
     let local = crate::cas::open_local_store(&repo).unwrap();
+    // The index compares time and size, as the terminal's commit does: an
+    // edit that keeps both is the one case it does not see.
     assert_eq!(
         crate::cas::load_merged_meta(&local).unwrap().versions.len(),
-        2
+        1
     );
 }
 
